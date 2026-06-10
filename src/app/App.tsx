@@ -52,6 +52,26 @@ function Shell() {
   const canEdit = me?.role !== "viewer";
   const workspace = useWorkspace();
 
+  if (workspace.loading) {
+    return (
+      <div className="min-h-screen grid place-items-center text-sm text-muted-foreground">
+        Loading workspace…
+      </div>
+    );
+  }
+  if (workspace.error) {
+    return (
+      <div className="min-h-screen grid place-items-center text-sm text-destructive">
+        Workspace error: {workspace.error}
+      </div>
+    );
+  }
+  if (!workspace.activePi || !workspace.activeProduct) {
+    return (
+      <EmptyWorkspaceState workspace={workspace} canEdit={canEdit} />
+    );
+  }
+
   const openDashboard = (productId: string) => {
     workspace.setActiveProduct(productId);
     workspace.ensureBoard(productId, workspace.activePi.id);
@@ -224,10 +244,53 @@ function LandingView({
   );
 }
 
+function EmptyWorkspaceState({
+  workspace,
+  canEdit,
+}: {
+  workspace: ReturnType<typeof useWorkspace>;
+  canEdit: boolean;
+}) {
+  const [name, setName] = useState("PI 2026.3");
+  const hasPi = workspace.ws.pis.length > 0;
+  const hasProduct = workspace.ws.products.length > 0;
+  return (
+    <div className="min-h-screen grid place-items-center p-6">
+      <Card className="p-6 max-w-md space-y-4">
+        <div>
+          <div className="text-base font-semibold">Workspace is empty</div>
+          <div className="text-xs text-muted-foreground mt-1">
+            {!canEdit
+              ? "Ask an admin to create the first PI and product."
+              : "Create the first PI and product to get started."}
+          </div>
+        </div>
+        {canEdit && !hasPi && (
+          <div className="space-y-2">
+            <Label className="text-xs">First PI name</Label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} />
+            <Button
+              size="sm"
+              className="w-full"
+              disabled={!name.trim()}
+              onClick={() => workspace.createPi(name.trim())}
+            >
+              Create PI
+            </Button>
+          </div>
+        )}
+        {canEdit && hasPi && !hasProduct && (
+          <NewProductDialog onCreate={workspace.createProduct} />
+        )}
+      </Card>
+    </div>
+  );
+}
+
 function NewProductDialog({
   onCreate,
 }: {
-  onCreate: (name: string, color: string) => string;
+  onCreate: (name: string, color: string) => void | Promise<string>;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -460,8 +523,8 @@ function ProductDashboard({
             workspace.ensureBoard(activeProduct.id, id);
           }}
           onCreate={(name) => {
-            const id = workspace.createPi(name);
-            workspace.ensureBoard(activeProduct.id, id);
+            // createPi inserts boards for every product internally
+            workspace.createPi(name);
           }}
           onDuplicate={workspace.duplicatePi}
           onDelete={workspace.deletePi}
@@ -507,8 +570,8 @@ function ProductDashboard({
         }
         onShowOnly={(id) => setVisibleUserIds([id])}
         onShowAll={() => setVisibleUserIds(ws.users.map((u) => u.id))}
-        onAdd={(name, color) => {
-          const id = workspace.addUser(name, color);
+        onAdd={async (name, color) => {
+          const id = await workspace.addUser(name, color);
           setVisibleUserIds((v) => [...v, id]);
         }}
         onUpdate={workspace.updateUser}

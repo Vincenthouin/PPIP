@@ -21,7 +21,6 @@ app.use(
 const ALLOWED_DOMAIN = "somfy.com";
 const ADMIN_EMAIL = "charlotte.lopez@somfy.com";
 type Role = "admin" | "editor" | "viewer";
-const roleKey = (id: string) => `user_role:${id}`;
 
 const supabaseAdmin = () =>
   createClient(
@@ -31,6 +30,34 @@ const supabaseAdmin = () =>
 
 const isAllowedEmail = (email: string) =>
   email.toLowerCase().trim().endsWith(`@${ALLOWED_DOMAIN}`);
+
+// ---- user_roles helpers (replace kv_store role entries) -------------------
+const getRole = async (userId: string): Promise<Role> => {
+  const { data } = await supabaseAdmin()
+    .from("user_roles")
+    .select("role")
+    .eq("user_id", userId)
+    .maybeSingle();
+  return ((data?.role as Role | undefined) ?? "viewer");
+};
+
+const setRole = async (userId: string, role: Role) => {
+  const { error } = await supabaseAdmin()
+    .from("user_roles")
+    .upsert({ user_id: userId, role, updated_at: new Date().toISOString() });
+  if (error) throw new Error(error.message);
+};
+
+const getRolesFor = async (userIds: string[]): Promise<Record<string, Role>> => {
+  if (!userIds.length) return {};
+  const { data } = await supabaseAdmin()
+    .from("user_roles")
+    .select("user_id, role")
+    .in("user_id", userIds);
+  return Object.fromEntries(
+    (data ?? []).map((r: any) => [r.user_id, r.role as Role]),
+  );
+};
 
 const getCallerUser = async (c: any) => {
   const token = c.req.header("Authorization")?.split(" ")[1];
@@ -43,7 +70,7 @@ const getCallerUser = async (c: any) => {
 const getCallerRole = async (c: any): Promise<{ user: any; role: Role } | null> => {
   const user = await getCallerUser(c);
   if (!user) return null;
-  const role = ((await kv.get(roleKey(user.id))) as Role | undefined) ?? "viewer";
+  const role = await getRole(user.id);
   return { user, role };
 };
 
@@ -57,7 +84,7 @@ const ensureAdminBootstrap = async () => {
 
     if (admin) {
       // Always ensure the admin email has admin role, even after account recreation
-      await kv.set(roleKey(admin.id), "admin");
+      await setRole(admin.id, "admin");
       await kv.set("bootstrap:admin_v1", new Date().toISOString());
       return;
     }
@@ -78,7 +105,7 @@ const ensureAdminBootstrap = async () => {
       );
       return;
     }
-    await kv.set(roleKey(data.user!.id), "admin");
+    await setRole(data.user!.id, "admin");
     await kv.set(flagKey, new Date().toISOString());
   } catch (e) {
     console.log(`Admin bootstrap exception: ${e}`);
@@ -122,7 +149,7 @@ app.post("/make-server-3775ce8a/signup", async (c) => {
     }
     const role: Role =
       data.user!.email?.toLowerCase() === ADMIN_EMAIL ? "admin" : "viewer";
-    await kv.set(roleKey(data.user!.id), role);
+    await setRole(data.user!.id, role);
     return c.json({ id: data.user!.id, email: data.user!.email, role });
   } catch (e) {
     console.log(`Signup exception: ${e}`);
@@ -152,17 +179,14 @@ app.get("/make-server-3775ce8a/users", async (c) => {
       console.log(`List users error: ${error.message}`);
       return c.json({ error: error.message }, 500);
     }
-    const roleEntries = await Promise.all(
-      data.users.map(async (u) => [u.id, (await kv.get(roleKey(u.id))) ?? "viewer"]),
-    );
-    const roles = Object.fromEntries(roleEntries);
+    const roles = await getRolesFor(data.users.map((u) => u.id));
     const users = data.users.map((u) => ({
       id: u.id,
       email: u.email,
       name: u.user_metadata?.name ?? "",
       createdAt: u.created_at,
       lastSignInAt: u.last_sign_in_at,
-      role: roles[u.id] as Role,
+      role: (roles[u.id] ?? "viewer") as Role,
     }));
     return c.json({ users });
   } catch (e) {
@@ -187,7 +211,7 @@ app.post("/make-server-3775ce8a/users/:id/role", async (c) => {
         400,
       );
     }
-    await kv.set(roleKey(id), role);
+    await setRole(id, role);
     return c.json({ id, role });
   } catch (e) {
     console.log(`Set role exception: ${e}`);
@@ -209,7 +233,8 @@ app.delete("/make-server-3775ce8a/users/:id", async (c) => {
       console.log(`Delete user error: ${error.message}`);
       return c.json({ error: error.message }, 500);
     }
-    await kv.del(roleKey(id));
+    // user_roles.user_id has ON DELETE CASCADE so the role row is removed
+    // automatically when the auth user is deleted.
     return c.json({ ok: true });
   } catch (e) {
     console.log(`Delete user exception: ${e}`);

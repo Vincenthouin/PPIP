@@ -352,7 +352,7 @@ function TagPicker({
   selectedIds: string[];
   tags: Tag[];
   onChange: (ids: string[]) => void;
-  onCreateTag: (name: string) => string | null;
+  onCreateTag: (name: string) => Promise<string | null> | string | null;
 }) {
   const [input, setInput] = useState("");
   const selected = tags.filter((t) => selectedIds.includes(t.id));
@@ -371,9 +371,9 @@ function TagPicker({
     setInput("");
   };
 
-  const create = () => {
+  const create = async () => {
     if (!canCreate) return;
-    const id = onCreateTag(input.trim());
+    const id = await onCreateTag(input.trim());
     if (id) onChange([...selectedIds, id]);
     setInput("");
   };
@@ -454,7 +454,7 @@ function TemplateEditor({
   weeksPerSprint: number;
   referenceStart?: Date;
   tags: Tag[];
-  onCreateTag: (name: string) => string | null;
+  onCreateTag: (name: string) => Promise<string | null> | string | null;
   onSave: (t: CategoryTemplate) => void;
   onCancel: () => void;
 }) {
@@ -593,7 +593,7 @@ export function TemplateLibrary({
   weeksPerSprint: number;
   referenceStart?: Date;
   tags: Tag[];
-  onCreateTag: (name: string) => string | null;
+  onCreateTag: (name: string) => Promise<string | null> | string | null;
 }) {
   const [editing, setEditing] = useState<CategoryTemplate | null>(null);
   const [open, setOpen] = useState(false);
