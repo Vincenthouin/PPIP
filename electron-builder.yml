@@ -1,0 +1,31 @@
+appId: com.somfy.ppip
+productName: PPIP
+copyright: Copyright © 2026 Somfy
+
+# Files included in the packaged app. Vite output + the Electron entry point.
+files:
+  - "dist/**/*"
+  - "electron/**/*"
+  - "package.json"
+
+# Where electron-builder writes the .dmg / .app / pack output.
+directories:
+  output: release
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  # Unsigned build for the POC. Set CSC_LINK + identity later for signing.
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  # Tell macOS this isn't a Mac App Store build.
+  type: distribution
+
+dmg:
+  title: ${productName} ${version}
+  artifactName: ${productName}-${version}-${arch}.dmg

@@ -17,12 +17,18 @@ Interactive dashboard for product designers in agile environments. Manages workl
 ## Scripts
 
 ```bash
-npm i           # install
-npm run dev     # vite dev server (default http://localhost:5173)
-npm run build   # production build to dist/
+npm i               # install
+npm run dev         # vite dev server (default http://localhost:5173)
+npm run build       # production build to dist/
+npm run electron    # launch Electron pointing at dist/ (must build first)
+npm run electron:dev  # vite + electron together, with HMR
+npm run electron:pack # vite build + electron-builder --mac --dir (unpacked .app for testing)
+npm run electron:dist # vite build + electron-builder --mac (.dmg in release/)
 ```
 
 No lint, test, or typecheck script is wired up.
+
+The Electron entry point is [electron/main.cjs](electron/main.cjs); the build config lives in [electron-builder.yml](electron-builder.yml). Vite's `base: './'` makes the bundle work both under HTTP (web) and under `file://` (Electron production).
 
 ## High-level architecture
 
@@ -67,4 +73,5 @@ Supabase project ref + anon key live in [utils/supabase/info.ts](utils/supabase/
 - Deploy the backend changes (`supabase/functions/server/index.tsx` — now writes roles to `user_roles`) via the Supabase CLI.
 - Apply the SQL migrations in [supabase/migrations/](supabase/migrations/) — see the README there.
 - Code-split the Vite bundle (it's currently a single 1.1 MB chunk).
-- Wrap with Electron for a native macOS app.
+- Code-sign + notarize the macOS .dmg (currently unsigned — users see a Gatekeeper warning on first open).
+- Auto-update mechanism for the Electron app (electron-updater + a release feed).
