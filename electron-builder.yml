@@ -19,8 +19,11 @@ mac:
       arch:
         - arm64
         - x64
-  # Unsigned build for the POC. Set CSC_LINK + identity later for signing.
-  identity: null
+  # Ad-hoc signing (identity "-") so macOS Gatekeeper shows the regular
+  # "unidentified developer" warning instead of refusing with "damaged".
+  # No Apple Developer cert needed. Replace with a real identity + notarize
+  # later for a frictionless install.
+  identity: "-"
   hardenedRuntime: false
   gatekeeperAssess: false
   # Tell macOS this isn't a Mac App Store build.
