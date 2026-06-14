@@ -26,4 +26,9 @@ L'app est **non signée** pour le POC : à la 1ère ouverture du .dmg/.app, macO
 
 Les rôles utilisateurs et les workspace tables vivent dans Postgres. Voir [supabase/migrations/README.md](supabase/migrations/README.md) pour appliquer le schéma + RLS + migration des rôles depuis le `kv_store`.
 
-L'edge function `make-server-3775ce8a` (signup, /me, /users, role management) est dans [supabase/functions/server/](supabase/functions/server/) — à redéployer via `supabase functions deploy` après les migrations.
+L'edge function `make-server-3775ce8a` (signup, /me, /users, role management) est dans [supabase/functions/make-server-3775ce8a/](supabase/functions/make-server-3775ce8a/). Pour la redéployer après changement :
+
+```bash
+supabase link --project-ref zbsxgmeraypzozcaxgdn   # une fois
+supabase functions deploy make-server-3775ce8a --no-verify-jwt
+```

@@ -7,6 +7,7 @@ Three SQL files, run in order via the Supabase dashboard (Project → SQL Editor
 | 1 | `0001_workspace_schema.sql` | Creates the 8 workspace tables (`user_roles`, `pis`, `tags`, `products`, `designers`, `templates`, `template_tags`, `boards`, `assignments`) with indexes. |
 | 2 | `0002_workspace_rls.sql` | Enables Row Level Security on every table, adds the `current_user_role()` helper, applies read-all / write-for-editor policies, and publishes the tables on the `supabase_realtime` channel. |
 | 3 | `0003_migrate_roles_from_kv.sql` | Copies the existing `kv_store_3775ce8a` `user_role:*` entries into the new `user_roles` table. Run once after #2. |
+| 4 | `0004_product_designers.sql` | Adds the `product_designers` M2M table linking each product to its team of designers. Designers stay a global pool; each product owns its own subset. |
 
 ## How to apply
 
@@ -14,7 +15,7 @@ Three SQL files, run in order via the Supabase dashboard (Project → SQL Editor
 2. Paste the contents of `0001_workspace_schema.sql`, click **Run**. Verify no errors.
 3. Repeat with `0002_workspace_rls.sql`.
 4. Repeat with `0003_migrate_roles_from_kv.sql`.
-5. Re-deploy the edge function (`supabase/functions/server/index.tsx`) via the Supabase CLI or the dashboard so it starts writing roles to the `user_roles` table.
+5. Re-deploy the edge function (`supabase functions deploy make-server-3775ce8a --no-verify-jwt`) so it starts writing roles to the `user_roles` table.
 6. Confirm `charlotte.lopez@somfy.com` still has the `admin` role by querying:
    ```sql
    select au.email, ur.role

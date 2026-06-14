@@ -80,7 +80,8 @@ export interface Workspace {
   templates: CategoryTemplate[];
   tags: Tag[];
   products: Product[];
-  users: User[];
+  users: User[];                                  // global designer pool
+  productDesignerIds: Record<string, string[]>;   // productId -> [designerId]
   pis: PiState[];
   boards: Record<string, Board>;
   activePiId: string;

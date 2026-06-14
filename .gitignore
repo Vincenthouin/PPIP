@@ -36,6 +36,9 @@ Thumbs.db
 release/
 out/
 
+# Supabase CLI cache
+supabase/.temp/
+
 # Misc
 *.log
 .cache/

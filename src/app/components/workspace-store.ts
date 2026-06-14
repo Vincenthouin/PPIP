@@ -185,7 +185,7 @@ const blankBoard = (
 
 const loadAll = async (): Promise<Omit<Workspace, "activePiId" | "activeProductId" | "activeUserId">> => {
   const sb = supabase();
-  const [pis, tags, products, designers, templates, ttags, boards, assignments] =
+  const [pis, tags, products, designers, templates, ttags, boards, assignments, productDesigners] =
     await Promise.all([
       sb.from("pis").select("*"),
       sb.from("tags").select("*"),
@@ -195,6 +195,7 @@ const loadAll = async (): Promise<Omit<Workspace, "activePiId" | "activeProductI
       sb.from("template_tags").select("*"),
       sb.from("boards").select("*"),
       sb.from("assignments").select("*"),
+      sb.from("product_designers").select("*"),
     ]);
 
   const tagsByTemplate = new Map<string, string[]>();
@@ -223,11 +224,19 @@ const loadAll = async (): Promise<Omit<Workspace, "activePiId" | "activeProductI
     };
   }
 
+  const productDesignerIds: Record<string, string[]> = {};
+  for (const r of productDesigners.data ?? []) {
+    const arr = productDesignerIds[r.product_id] ?? [];
+    arr.push(r.designer_id);
+    productDesignerIds[r.product_id] = arr;
+  }
+
   return {
     pis: (pis.data ?? []).map(fromDbPi),
     tags: (tags.data ?? []).map(fromDbTag),
     products: (products.data ?? []).map(fromDbProduct),
     users: (designers.data ?? []).map(fromDbDesigner),
+    productDesignerIds,
     templates: (templates.data ?? []).map((r) =>
       fromDbTemplate(r, tagsByTemplate.get(r.id) ?? []),
     ),
@@ -280,6 +289,7 @@ export function useWorkspace() {
       "template_tags",
       "boards",
       "assignments",
+      "product_designers",
     ];
     for (const t of tables) {
       ch.on(
@@ -693,17 +703,20 @@ export function useWorkspace() {
           ...t,
           tagIds: (t.tagIds ?? []).filter((tid) => !removedTagIds.includes(tid)),
         }));
+        // drop the product-key from productDesignerIds (DB cascades anyway)
+        const { [id]: _drop, ...productDesignerIds } = cur.productDesignerIds;
         return {
           ...cur,
           products,
           tags,
           boards,
           templates,
+          productDesignerIds,
           activeProductId:
             cur.activeProductId === id ? products[0]?.id ?? "" : cur.activeProductId,
         };
       });
-      // products cascade -> boards (FK) and the product-tag (FK on tags.product_id)
+      // products cascade -> boards, tags, product_designers (all FKs)
       await supabase().from("products").delete().eq("id", id);
     },
     [patchWs],
@@ -808,15 +821,118 @@ export function useWorkspace() {
             categories: boards[k].categories.filter((c) => c.userId !== id),
           };
         }
+        // local cleanup of productDesignerIds (DB cascades anyway)
+        const productDesignerIds: Record<string, string[]> = {};
+        for (const [pid, ids] of Object.entries(cur.productDesignerIds)) {
+          productDesignerIds[pid] = ids.filter((x) => x !== id);
+        }
         return {
           ...cur,
           users,
           boards,
+          productDesignerIds,
           activeUserId: cur.activeUserId === id ? users[0]?.id ?? "" : cur.activeUserId,
         };
       });
-      // assignments.designer_id cascades on delete
+      // assignments.designer_id + product_designers.designer_id both cascade
       await supabase().from("designers").delete().eq("id", id);
+    },
+    [patchWs],
+  );
+
+  // ---- Designers ↔ Product (M2M) ----------------------------------------
+
+  // Link an existing global designer to a product (read-modify-write style).
+  const addDesignerToProduct = useCallback(
+    async (productId: string, designerId: string) => {
+      const w = wsRef.current;
+      if (!w) return;
+      const current = w.productDesignerIds[productId] ?? [];
+      if (current.includes(designerId)) return;
+      patchWs((cur) => ({
+        ...cur,
+        productDesignerIds: {
+          ...cur.productDesignerIds,
+          [productId]: [...(cur.productDesignerIds[productId] ?? []), designerId],
+        },
+      }));
+      await supabase()
+        .from("product_designers")
+        .insert({ product_id: productId, designer_id: designerId });
+    },
+    [patchWs],
+  );
+
+  // Create a brand-new global designer AND link them to the product in one shot.
+  const createDesignerForProduct = useCallback(
+    async (productId: string, name: string, color: string) => {
+      const u: User = {
+        id: uid(),
+        name: name.trim() || "Designer",
+        color,
+        initials: initialsOf(name),
+      };
+      patchWs((cur) => ({
+        ...cur,
+        users: [...cur.users, u],
+        productDesignerIds: {
+          ...cur.productDesignerIds,
+          [productId]: [...(cur.productDesignerIds[productId] ?? []), u.id],
+        },
+        activeUserId: u.id,
+      }));
+      const sb = supabase();
+      await sb.from("designers").insert(toDbDesigner(u));
+      await sb
+        .from("product_designers")
+        .insert({ product_id: productId, designer_id: u.id });
+      saveUiPrefs({ ...loadUiPrefs(), activeUserId: u.id });
+      return u.id;
+    },
+    [patchWs],
+  );
+
+  // Remove a designer from a product. Cascades to: every assignment that
+  // designer had on this product's boards (across all PIs). The designer
+  // itself stays in the global pool and on other products.
+  const removeDesignerFromProduct = useCallback(
+    async (productId: string, designerId: string) => {
+      const w = wsRef.current;
+      if (!w) return;
+      patchWs((cur) => {
+        const boards = { ...cur.boards };
+        for (const k of Object.keys(boards)) {
+          if (boards[k].productId !== productId) continue;
+          const before = boards[k].categories;
+          const after = before.filter((c) => c.userId !== designerId);
+          if (after.length !== before.length) {
+            boards[k] = { ...boards[k], categories: after };
+          }
+        }
+        return {
+          ...cur,
+          productDesignerIds: {
+            ...cur.productDesignerIds,
+            [productId]: (cur.productDesignerIds[productId] ?? []).filter(
+              (x) => x !== designerId,
+            ),
+          },
+          boards,
+        };
+      });
+      const sb = supabase();
+      // Delete the link first (clean up the team), then drop any assignments
+      // that designer still had on this product's boards.
+      await sb
+        .from("product_designers")
+        .delete()
+        .eq("product_id", productId)
+        .eq("designer_id", designerId);
+      await sb
+        .from("assignments")
+        .delete()
+        .eq("product_id", productId)
+        .eq("designer_id", designerId);
     },
     [patchWs],
   );
@@ -849,6 +965,9 @@ export function useWorkspace() {
       updateUser,
       removeUser,
       setActiveUser,
+      addDesignerToProduct,
+      removeDesignerFromProduct,
+      createDesignerForProduct,
     }),
     [
       ws,
@@ -876,6 +995,9 @@ export function useWorkspace() {
       updateUser,
       removeUser,
       setActiveUser,
+      addDesignerToProduct,
+      removeDesignerFromProduct,
+      createDesignerForProduct,
     ],
   );
 }
@@ -944,6 +1066,25 @@ const applyRealtime = (
               categories: existing?.categories ?? [],
             },
           },
+        };
+      }
+      case "product_designers": {
+        const pid = (eventType === "DELETE" ? old : row).product_id;
+        const did = (eventType === "DELETE" ? old : row).designer_id;
+        const cur = w.productDesignerIds[pid] ?? [];
+        if (eventType === "DELETE") {
+          return {
+            ...w,
+            productDesignerIds: {
+              ...w.productDesignerIds,
+              [pid]: cur.filter((x) => x !== did),
+            },
+          };
+        }
+        if (cur.includes(did)) return w;
+        return {
+          ...w,
+          productDesignerIds: { ...w.productDesignerIds, [pid]: [...cur, did] },
         };
       }
       case "assignments": {

@@ -6,9 +6,13 @@ import {
   ArrowLeft,
   LayoutDashboard,
   LogOut,
+  MoreHorizontal,
+  Pencil,
   Plus,
   Shield,
   Sparkles,
+  Trash2,
+  Users,
 } from "lucide-react";
 import { addDays, format } from "date-fns";
 import { AuthProvider, useAuth } from "./auth/auth-context";
@@ -27,6 +31,15 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "./components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "./components/ui/dropdown-menu";
+import { ConfirmDelete } from "./components/confirm-delete";
+import { Product } from "./components/pi-types";
 import { useWorkspace } from "./components/workspace-store";
 import {
   AssignedCategory,
@@ -34,6 +47,8 @@ import {
   MeetingLine,
   PALETTE,
   Sprint,
+  USER_PALETTE,
+  User,
   uid,
 } from "./components/pi-types";
 import { PiSwitcher } from "./components/pi-switcher";
@@ -43,7 +58,7 @@ import { SprintBoard } from "./components/sprint-board";
 import { ProductionSummary } from "./components/production-summary";
 import { UserBar } from "./components/user-bar";
 
-type View = "landing" | "dashboard" | "admin";
+type View = "landing" | "dashboard" | "admin" | "team";
 
 function Shell() {
   const { me, signOut } = useAuth();
@@ -67,9 +82,7 @@ function Shell() {
     );
   }
   if (!workspace.activePi || !workspace.activeProduct) {
-    return (
-      <EmptyWorkspaceState workspace={workspace} canEdit={canEdit} />
-    );
+    return <EmptyWorkspaceState workspace={workspace} canEdit={canEdit} />;
   }
 
   const openDashboard = (productId: string) => {
@@ -102,6 +115,16 @@ function Shell() {
                 onClick={() => setView("landing")}
               >
                 <ArrowLeft className="size-4" /> Overall view
+              </Button>
+            )}
+            {canEdit && (
+              <Button
+                variant={view === "team" ? "secondary" : "ghost"}
+                size="sm"
+                onClick={() => setView("team")}
+              >
+                <Users className="size-4" />
+                Team
               </Button>
             )}
             {isAdmin && (
@@ -148,6 +171,9 @@ function Shell() {
             <ProductDashboard workspace={workspace} canEdit={canEdit} />
           </DndProvider>
         )}
+        {view === "team" && canEdit && (
+          <TeamView workspace={workspace} />
+        )}
         {view === "admin" && isAdmin && <AdminDashboard />}
       </main>
     </div>
@@ -164,6 +190,7 @@ function LandingView({
   onOpenProduct: (id: string) => void;
 }) {
   const { ws, activePi } = workspace;
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const piEnd = computePiEnd(
     new Date(activePi.startDateISO),
     activePi.sprintCount,
@@ -216,31 +243,203 @@ function LandingView({
             const tag = ws.tags.find((t) => t.id === product.tagId);
             const cats = board.categories.length;
             return (
-              <button
+              <ProductCard
                 key={product.id}
-                onClick={() => onOpenProduct(product.id)}
-                className="text-left rounded-xl border bg-card p-4 hover:shadow-sm hover:border-foreground/40 transition"
-                style={{ borderLeft: `4px solid ${product.color}` }}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="text-base">{product.name}</span>
-                  {tag && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
-                      #{tag.name}
-                    </span>
-                  )}
-                </div>
-                <div className="text-xs text-muted-foreground mt-1">
-                  {cats === 0
-                    ? "No assignments yet"
-                    : `${cats} assignment${cats > 1 ? "s" : ""} on ${activePi.name}`}
-                </div>
-              </button>
+                product={product}
+                tagName={tag?.name}
+                assignmentCount={cats}
+                piName={activePi.name}
+                canEdit={canEdit}
+                canDelete={canEdit && ws.products.length > 1}
+                onOpen={() => onOpenProduct(product.id)}
+                onEdit={() => setEditingProduct(product)}
+                onDelete={() => workspace.deleteProduct(product.id)}
+              />
             );
           })}
         </div>
       </div>
+
+      <EditProductDialog
+        product={editingProduct}
+        onClose={() => setEditingProduct(null)}
+        onSave={(patch) =>
+          editingProduct && workspace.updateProduct(editingProduct.id, patch)
+        }
+      />
     </div>
+  );
+}
+
+function ProductCard({
+  product,
+  tagName,
+  assignmentCount,
+  piName,
+  canEdit,
+  canDelete,
+  onOpen,
+  onEdit,
+  onDelete,
+}: {
+  product: Product;
+  tagName: string | undefined;
+  assignmentCount: number;
+  piName: string;
+  canEdit: boolean;
+  canDelete: boolean;
+  onOpen: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <div
+      className="group relative rounded-xl border bg-card hover:shadow-sm hover:border-foreground/40 transition"
+      style={{ borderLeft: `4px solid ${product.color}` }}
+    >
+      <button
+        type="button"
+        onClick={onOpen}
+        className="text-left w-full p-4 pr-12"
+      >
+        <div className="flex items-center gap-2">
+          <span className="text-base">{product.name}</span>
+          {tagName && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
+              #{tagName}
+            </span>
+          )}
+        </div>
+        <div className="text-xs text-muted-foreground mt-1">
+          {assignmentCount === 0
+            ? "No assignments yet"
+            : `${assignmentCount} assignment${assignmentCount > 1 ? "s" : ""} on ${piName}`}
+        </div>
+      </button>
+
+      {canEdit && (
+        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                size="icon"
+                variant="ghost"
+                aria-label="Product actions"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <MoreHorizontal className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={onEdit}>
+                <Pencil className="size-4" /> Edit
+              </DropdownMenuItem>
+              {canDelete && (
+                <>
+                  <DropdownMenuSeparator />
+                  <ConfirmDelete
+                    title={`Delete "${product.name}"?`}
+                    description="This removes the product, its auto-created tag, every board for this product, and all its assignments. Templates and other products are kept."
+                    confirmLabel="Delete product"
+                    onConfirm={onDelete}
+                    trigger={
+                      <DropdownMenuItem
+                        // Prevent the menu from closing before AlertDialog opens
+                        onSelect={(e) => e.preventDefault()}
+                        className="text-destructive focus:text-destructive"
+                      >
+                        <Trash2 className="size-4" /> Delete
+                      </DropdownMenuItem>
+                    }
+                  />
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EditProductDialog({
+  product,
+  onClose,
+  onSave,
+}: {
+  product: Product | null;
+  onClose: () => void;
+  onSave: (patch: Partial<Product>) => void;
+}) {
+  const open = product !== null;
+  const [name, setName] = useState("");
+  const [color, setColor] = useState(PALETTE[0]);
+
+  // Sync local state when a new product is selected
+  useEffect(() => {
+    if (product) {
+      setName(product.name);
+      setColor(product.color);
+    }
+  }, [product?.id]);
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Edit product</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Name</Label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Renaming the product also renames its auto-tag.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Color</Label>
+            <div className="flex gap-1.5">
+              {PALETTE.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setColor(c)}
+                  className="size-6 rounded-full border-2"
+                  style={{
+                    background: c,
+                    borderColor: color === c ? "#000" : "transparent",
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            disabled={!name.trim() || !product}
+            onClick={() => {
+              const patch: Partial<Product> = {};
+              if (product) {
+                if (name.trim() !== product.name) patch.name = name.trim();
+                if (color !== product.color) patch.color = color;
+              }
+              if (Object.keys(patch).length > 0) onSave(patch);
+              onClose();
+            }}
+          >
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -251,39 +450,350 @@ function EmptyWorkspaceState({
   workspace: ReturnType<typeof useWorkspace>;
   canEdit: boolean;
 }) {
-  const [name, setName] = useState("PI 2026.3");
   const hasPi = workspace.ws.pis.length > 0;
   const hasProduct = workspace.ws.products.length > 0;
+  const [piName, setPiName] = useState("PI 2026.3");
+
+  const headline = !hasPi
+    ? "Create your first PI"
+    : !hasProduct
+      ? "Create your first product"
+      : "Workspace setup";
+
   return (
     <div className="min-h-screen grid place-items-center p-6">
-      <Card className="p-6 max-w-md space-y-4">
+      <Card className="p-6 max-w-md w-full space-y-4">
         <div>
-          <div className="text-base font-semibold">Workspace is empty</div>
+          <div className="text-base font-semibold">{headline}</div>
           <div className="text-xs text-muted-foreground mt-1">
             {!canEdit
-              ? "Ask an admin to create the first PI and product."
-              : "Create the first PI and product to get started."}
+              ? "Ask an admin to finish workspace setup."
+              : "Two quick steps before you can open the dashboard. Designers are added per product later."}
           </div>
+          <ol className="flex gap-2 text-[10px] uppercase tracking-wide text-muted-foreground mt-3">
+            <li className={hasPi ? "text-foreground" : ""}>1. PI</li>
+            <li>·</li>
+            <li className={hasProduct ? "text-foreground" : ""}>2. Product</li>
+          </ol>
         </div>
+
         {canEdit && !hasPi && (
           <div className="space-y-2">
-            <Label className="text-xs">First PI name</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} />
+            <Label className="text-xs">PI name</Label>
+            <Input value={piName} onChange={(e) => setPiName(e.target.value)} />
             <Button
               size="sm"
               className="w-full"
-              disabled={!name.trim()}
-              onClick={() => workspace.createPi(name.trim())}
+              disabled={!piName.trim()}
+              onClick={() => workspace.createPi(piName.trim())}
             >
               Create PI
             </Button>
           </div>
         )}
+
         {canEdit && hasPi && !hasProduct && (
           <NewProductDialog onCreate={workspace.createProduct} />
         )}
       </Card>
     </div>
+  );
+}
+
+function TeamView({
+  workspace,
+}: {
+  workspace: ReturnType<typeof useWorkspace>;
+}) {
+  const { ws } = workspace;
+  const [editing, setEditing] = useState<User | null>(null);
+
+  // Count product memberships per designer for context
+  const productsForDesigner = (designerId: string): string[] => {
+    const out: string[] = [];
+    for (const p of ws.products) {
+      if ((ws.productDesignerIds[p.id] ?? []).includes(designerId)) out.push(p.name);
+    }
+    return out;
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card className="p-5">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <div className="text-xs uppercase tracking-wide text-muted-foreground">
+              Team
+            </div>
+            <div className="text-2xl mt-0.5">Designers in your organization</div>
+            <div className="text-sm text-muted-foreground mt-1">
+              {ws.users.length} designer{ws.users.length === 1 ? "" : "s"} in the
+              pool. New designers added here are global — attach them to projects
+              from each product dashboard.
+            </div>
+          </div>
+          <NewDesignerDialog onCreate={workspace.addUser} />
+        </div>
+      </Card>
+
+      <Card>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-left text-xs text-muted-foreground border-b">
+              <tr>
+                <th className="py-2 px-4">Designer</th>
+                <th className="py-2 px-4">Projects</th>
+                <th className="py-2 px-4 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ws.users.length === 0 && (
+                <tr>
+                  <td colSpan={3} className="py-8 text-center text-muted-foreground">
+                    No designers in the pool yet. Open a product dashboard to add one.
+                  </td>
+                </tr>
+              )}
+              {ws.users.map((u) => {
+                const products = productsForDesigner(u.id);
+                return (
+                  <tr key={u.id} className="border-b last:border-0">
+                    <td className="py-2 px-4">
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="size-7 rounded-full grid place-items-center text-white text-xs"
+                          style={{ background: u.color }}
+                        >
+                          {u.initials ?? u.name.slice(0, 2).toUpperCase()}
+                        </div>
+                        <span>{u.name}</span>
+                      </div>
+                    </td>
+                    <td className="py-2 px-4 text-muted-foreground">
+                      {products.length === 0 ? (
+                        <span className="text-xs italic">Not on any project</span>
+                      ) : (
+                        <div className="flex flex-wrap gap-1">
+                          {products.map((p) => (
+                            <span
+                              key={p}
+                              className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted"
+                            >
+                              {p}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </td>
+                    <td className="py-2 px-4 text-right">
+                      <div className="inline-flex gap-1">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setEditing(u)}
+                        >
+                          <Pencil className="size-4" /> Edit
+                        </Button>
+                        <ConfirmDelete
+                          title={`Remove ${u.name} from the team?`}
+                          description={
+                            products.length === 0
+                              ? "This designer is on no project. Deleting them is safe."
+                              : `This designer is currently on ${products.length} project${products.length === 1 ? "" : "s"} (${products.join(", ")}). Deleting them removes every assignment they had on every product's board, across all PIs.`
+                          }
+                          confirmLabel="Remove from team"
+                          onConfirm={() => workspace.removeUser(u.id)}
+                          trigger={
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-destructive"
+                              disabled={ws.users.length <= 1}
+                              title={
+                                ws.users.length <= 1
+                                  ? "Add another designer before removing the last one"
+                                  : "Remove from team"
+                              }
+                            >
+                              <Trash2 className="size-4" /> Remove
+                            </Button>
+                          }
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <EditDesignerDialog
+        designer={editing}
+        onClose={() => setEditing(null)}
+        onSave={(patch) =>
+          editing && workspace.updateUser(editing.id, patch)
+        }
+      />
+    </div>
+  );
+}
+
+function EditDesignerDialog({
+  designer,
+  onClose,
+  onSave,
+}: {
+  designer: User | null;
+  onClose: () => void;
+  onSave: (patch: Partial<User>) => void;
+}) {
+  const open = designer !== null;
+  const [name, setName] = useState("");
+  const [color, setColor] = useState(PALETTE[0]);
+
+  useEffect(() => {
+    if (designer) {
+      setName(designer.name);
+      setColor(designer.color);
+    }
+  }, [designer?.id]);
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Edit designer</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Name</Label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Color</Label>
+            <div className="flex gap-1.5">
+              {PALETTE.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setColor(c)}
+                  className="size-6 rounded-full border-2"
+                  style={{
+                    background: c,
+                    borderColor: color === c ? "#000" : "transparent",
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            disabled={!name.trim() || !designer}
+            onClick={() => {
+              const patch: Partial<User> = {};
+              if (designer) {
+                if (name.trim() !== designer.name) patch.name = name.trim();
+                if (color !== designer.color) patch.color = color;
+              }
+              if (Object.keys(patch).length > 0) onSave(patch);
+              onClose();
+            }}
+          >
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function NewDesignerDialog({
+  onCreate,
+}: {
+  onCreate: (name: string, color: string) => void | Promise<string>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [color, setColor] = useState(USER_PALETTE[0]);
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(v) => {
+        setOpen(v);
+        if (v) {
+          setName("");
+          setColor(USER_PALETTE[0]);
+        }
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button size="sm">
+          <Plus className="size-4" /> New designer
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Add a designer to your team</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs">Name</Label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Charlotte"
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Color</Label>
+            <div className="flex gap-1.5">
+              {USER_PALETTE.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setColor(c)}
+                  className="size-6 rounded-full border-2"
+                  style={{
+                    background: c,
+                    borderColor: color === c ? "#000" : "transparent",
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            This adds the designer to the global pool. To schedule them on a
+            project, open that product's dashboard and click <strong>Add → From team</strong>.
+          </p>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            disabled={!name.trim()}
+            onClick={() => {
+              onCreate(name.trim(), color);
+              setOpen(false);
+            }}
+          >
+            Add to team
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -369,13 +879,33 @@ function ProductDashboard({
   const board = workspace.getBoard(activeProduct.id, activePi.id);
   const [collapsedTemplates, setCollapsedTemplates] = useState(false);
   const [detailed, setDetailed] = useState(false);
-  const [visibleUserIds, setVisibleUserIds] = useState<string[]>(() =>
-    ws.users.map((u) => u.id),
+
+  // Designers scheduled on the active product (subset of the global pool).
+  const productDesignerIds = ws.productDesignerIds[activeProduct.id] ?? [];
+  const productDesigners = useMemo(
+    () => ws.users.filter((u) => productDesignerIds.includes(u.id)),
+    [ws.users, productDesignerIds.join("|")],
+  );
+  // Designers not yet linked to this product (for the "pick from team" picker).
+  const availableDesigners = useMemo(
+    () => ws.users.filter((u) => !productDesignerIds.includes(u.id)),
+    [ws.users, productDesignerIds.join("|")],
   );
 
+  const [visibleUserIds, setVisibleUserIds] = useState<string[]>(() =>
+    productDesigners.map((u) => u.id),
+  );
+
+  // Drop stale ids when designers leave; auto-show new ones added to the product.
   useEffect(() => {
-    setVisibleUserIds((v) => v.filter((id) => ws.users.some((u) => u.id === id)));
-  }, [ws.users]);
+    setVisibleUserIds((v) => {
+      const kept = v.filter((id) => productDesigners.some((u) => u.id === id));
+      const newIds = productDesigners
+        .map((u) => u.id)
+        .filter((id) => !kept.includes(id));
+      return [...kept, ...newIds];
+    });
+  }, [productDesigners]);
 
   const sprints: Sprint[] = useMemo(() => {
     const start = new Date(activePi.startDateISO);
@@ -386,8 +916,8 @@ function ProductDashboard({
     });
   }, [activePi.id, activePi.startDateISO, activePi.sprintCount, activePi.weeksPerSprint]);
 
-  const activeUser =
-    ws.users.find((u) => u.id === ws.activeUserId) ?? ws.users[0];
+  const activeUser: User | undefined =
+    productDesigners.find((u) => u.id === ws.activeUserId) ?? productDesigners[0];
   const piEnd = computePiEnd(
     new Date(activePi.startDateISO),
     activePi.sprintCount,
@@ -474,6 +1004,7 @@ function ProductDashboard({
   };
 
   const applyPreselected = () => {
+    if (!activeUser) return;
     const allUserId = activeUser.id;
     const toAdd: AssignedCategory[] = [];
     for (const tid of board.preselectedIds) {
@@ -559,8 +1090,9 @@ function ProductDashboard({
       />
 
       <UserBar
-        users={ws.users}
-        activeUserId={activeUser.id}
+        users={productDesigners}
+        availableDesigners={availableDesigners}
+        activeUserId={activeUser?.id ?? ""}
         visibleUserIds={visibleUserIds}
         onSelectActive={workspace.setActiveUser}
         onToggleVisible={(id) =>
@@ -569,60 +1101,73 @@ function ProductDashboard({
           )
         }
         onShowOnly={(id) => setVisibleUserIds([id])}
-        onShowAll={() => setVisibleUserIds(ws.users.map((u) => u.id))}
-        onAdd={async (name, color) => {
-          const id = await workspace.addUser(name, color);
-          setVisibleUserIds((v) => [...v, id]);
-        }}
+        onShowAll={() => setVisibleUserIds(productDesigners.map((u) => u.id))}
+        onAddExisting={(id) =>
+          workspace.addDesignerToProduct(activeProduct.id, id)
+        }
+        onCreateNew={(name, color) =>
+          workspace.createDesignerForProduct(activeProduct.id, name, color)
+        }
         onUpdate={workspace.updateUser}
-        onRemove={workspace.removeUser}
+        onRemoveFromProduct={(id) =>
+          workspace.removeDesignerFromProduct(activeProduct.id, id)
+        }
         detailed={detailed}
         onToggleDetailed={setDetailed}
       />
 
-      <div
-        className="grid gap-4"
-        style={{
-          gridTemplateColumns: collapsedTemplates ? "auto 1fr" : "320px 1fr",
-        }}
-      >
-        <TemplateLibrary
-          templates={ws.templates}
-          onChange={(t) => workspace.setTemplates(t)}
-          collapsed={collapsedTemplates}
-          onToggleCollapsed={() => setCollapsedTemplates((c) => !c)}
-          weeksPerSprint={activePi.weeksPerSprint}
-          referenceStart={sprints[0]?.start}
-          tags={ws.tags}
-          onCreateTag={workspace.createTag}
-        />
-        <SprintBoard
-          sprints={sprints}
-          weeksPerSprint={activePi.weeksPerSprint}
-          workdayHours={activePi.workdayHours}
-          categories={board.categories}
-          users={ws.users}
-          activeUser={activeUser}
-          visibleUserIds={visibleUserIds}
-          detailed={detailed}
-          templates={ws.templates}
-          onAddFromTemplate={onAddFromTemplate}
-          onUpdate={onUpdate}
-          onRemove={onRemove}
-          onToggleSprint={onToggleSprint}
-          onReassignUser={onReassignUser}
-          onUpdateTemplateLine={onUpdateTemplateLine}
-        />
-      </div>
+      {productDesigners.length === 0 ? (
+        <Card className="p-6 text-sm text-muted-foreground text-center">
+          Add at least one designer to <strong>{activeProduct.name}</strong> from
+          the bar above to start scheduling.
+        </Card>
+      ) : (
+        <>
+          <div
+            className="grid gap-4"
+            style={{
+              gridTemplateColumns: collapsedTemplates ? "auto 1fr" : "320px 1fr",
+            }}
+          >
+            <TemplateLibrary
+              templates={ws.templates}
+              onChange={(t) => workspace.setTemplates(t)}
+              collapsed={collapsedTemplates}
+              onToggleCollapsed={() => setCollapsedTemplates((c) => !c)}
+              weeksPerSprint={activePi.weeksPerSprint}
+              referenceStart={sprints[0]?.start}
+              tags={ws.tags}
+              onCreateTag={workspace.createTag}
+            />
+            <SprintBoard
+              sprints={sprints}
+              weeksPerSprint={activePi.weeksPerSprint}
+              workdayHours={activePi.workdayHours}
+              categories={board.categories}
+              users={productDesigners}
+              activeUser={activeUser!}
+              visibleUserIds={visibleUserIds}
+              detailed={detailed}
+              templates={ws.templates}
+              onAddFromTemplate={onAddFromTemplate}
+              onUpdate={onUpdate}
+              onRemove={onRemove}
+              onToggleSprint={onToggleSprint}
+              onReassignUser={onReassignUser}
+              onUpdateTemplateLine={onUpdateTemplateLine}
+            />
+          </div>
 
-      <ProductionSummary
-        sprints={sprints}
-        categories={board.categories}
-        users={ws.users}
-        visibleUserIds={visibleUserIds}
-        weeksPerSprint={activePi.weeksPerSprint}
-        workdayHours={activePi.workdayHours}
-      />
+          <ProductionSummary
+            sprints={sprints}
+            categories={board.categories}
+            users={productDesigners}
+            visibleUserIds={visibleUserIds}
+            weeksPerSprint={activePi.weeksPerSprint}
+            workdayHours={activePi.workdayHours}
+          />
+        </>
+      )}
     </div>
   );
 }
