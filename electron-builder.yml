@@ -12,6 +12,8 @@ files:
 directories:
   output: release
 
+afterPack: electron/after-pack.cjs
+
 mac:
   category: public.app-category.productivity
   target:
