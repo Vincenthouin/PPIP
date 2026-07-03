@@ -7,6 +7,7 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
+    "typecheck": "tsc --noEmit",
     "electron": "electron .",
     "electron:dev": "concurrently -k -n vite,electron -c blue,magenta \"vite\" \"wait-on http://localhost:5173 && ELECTRON_START_URL=http://localhost:5173 electron .\"",
     "electron:pack": "vite build && electron-builder --mac --dir",
@@ -73,11 +74,15 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.1.12",
+    "@types/node": "^26.1.0",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "4.7.0",
     "concurrently": "^9.2.1",
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8",
     "tailwindcss": "4.1.12",
+    "typescript": "5.6",
     "vite": "6.3.5",
     "wait-on": "^8.0.5"
   }

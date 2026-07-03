@@ -1,5 +1,9 @@
 export type Cadence = "weekly" | "biweekly" | "monthly" | "once";
+
 export type FrequencyMode = "cadence" | "quantity" | "perWeek";
+
+// Amélioration 7 — mode de tri des cartes dans les colonnes sprint
+export type SortMode = "manual" | "designer" | "template";
 
 export interface MeetingLine {
   id: string;
@@ -9,6 +13,7 @@ export interface MeetingLine {
   cadence: Cadence;
   quantityPerSprint?: number;
   perWeek?: number[];
+  notes?: string; // Amélioration 8
 }
 
 export interface CategoryTemplate {
@@ -18,6 +23,7 @@ export interface CategoryTemplate {
   lines: MeetingLine[];
   defaultSelected?: boolean;
   tagIds?: string[];
+  notes?: string; // Amélioration 8
 }
 
 export interface Tag {
@@ -39,6 +45,7 @@ export interface Board {
   piId: string;
   categories: AssignedCategory[];
   preselectedIds: string[];
+  sortMode?: SortMode; // Amélioration 7
 }
 
 export interface User {
@@ -46,6 +53,7 @@ export interface User {
   name: string;
   color: string;
   initials?: string;
+  workdayHours?: number; // Amélioration 4 — heures/jour par designer (défaut 8)
 }
 
 export interface AssignedCategory {
@@ -56,6 +64,8 @@ export interface AssignedCategory {
   color: string;
   sprintIds: string[];
   lines: MeetingLine[];
+  orderBySprintId?: Record<string, number>; // Amélioration 1
+  notes?: string; // Amélioration 8
 }
 
 export interface Sprint {
@@ -71,7 +81,7 @@ export interface PiState {
   startDateISO: string;
   sprintCount: number;
   weeksPerSprint: number;
-  workdayHours: number;
+  workdayHours: number; // conservé comme valeur par défaut pour les nouveaux designers
   createdAt: number;
   updatedAt: number;
 }
@@ -80,8 +90,8 @@ export interface Workspace {
   templates: CategoryTemplate[];
   tags: Tag[];
   products: Product[];
-  users: User[];                                  // global designer pool
-  productDesignerIds: Record<string, string[]>;   // productId -> [designerId]
+  users: User[];
+  productDesignerIds: Record<string, string[]>;
   pis: PiState[];
   boards: Record<string, Board>;
   activePiId: string;
@@ -176,6 +186,7 @@ export const linesEqual = (a: MeetingLine, b: MeetingLine): boolean => {
   if ((a.mode ?? "cadence") !== (b.mode ?? "cadence")) return false;
   if (a.cadence !== b.cadence) return false;
   if ((a.quantityPerSprint ?? null) !== (b.quantityPerSprint ?? null)) return false;
+  if ((a.notes ?? "") !== (b.notes ?? "")) return false;
   const ap = a.perWeek ?? null;
   const bp = b.perWeek ?? null;
   if ((ap === null) !== (bp === null)) return false;
@@ -205,3 +216,14 @@ export const summarizeLine = (line: MeetingLine, weeks: number): string => {
       return "Once / sprint";
   }
 };
+
+// Amélioration 5 — conversion heures → jours avec fallback sur workdayHours du PI
+export const hoursToDays = (hours: number, workdayHours: number): string => {
+  if (workdayHours <= 0) return `${hours.toFixed(1)}h`;
+  const days = hours / workdayHours;
+  return `${days.toFixed(1)}j (${hours.toFixed(1)}h)`;
+};
+
+// Résoudre les heures/jour d'un designer, avec fallback sur la valeur du PI
+export const resolveWorkdayHours = (user: User, piWorkdayHours: number): number =>
+  user.workdayHours ?? piWorkdayHours;

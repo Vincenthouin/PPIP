@@ -8,6 +8,7 @@ import {
   PALETTE,
   PiState,
   Product,
+  SortMode,
   Tag,
   User,
   Workspace,
@@ -16,27 +17,13 @@ import {
   uid,
 } from "./pi-types";
 
-// ---------------------------------------------------------------------------
-// PoC remote workspace store.
-//
-//   Single shared workspace (no multi-tenant yet — every authenticated user
-//   sees the same data, gated by their RLS role: viewer / editor / admin).
-//
-//   Workspace.{pis,products,tags,designers,templates,boards,assignments} live
-//   in Postgres tables (see supabase/migrations/0001_workspace_schema.sql).
-//   activePiId / activeProductId / activeUserId are per-browser UI prefs and
-//   stay in localStorage.
-//
-//   Mutations: optimistic local update + write to Supabase. Realtime echoes
-//   reconcile other clients. Last-write-wins; good enough for POC.
-// ---------------------------------------------------------------------------
-
 const UI_PREFS_KEY = "pi-planner:ui-prefs:v1";
 
 interface UiPrefs {
   activePiId?: string;
   activeProductId?: string;
   activeUserId?: string;
+  sortMode?: SortMode;
 }
 
 const loadUiPrefs = (): UiPrefs => {
@@ -101,17 +88,20 @@ const toDbProduct = (p: Product) => ({
   tag_id: p.tagId,
 });
 
+// Amélioration 4 — workdayHours par designer
 const fromDbDesigner = (r: any): User => ({
   id: r.id,
   name: r.name,
   color: r.color,
   initials: r.initials ?? undefined,
+  workdayHours: r.workday_hours != null ? Number(r.workday_hours) : undefined,
 });
 const toDbDesigner = (u: User) => ({
   id: u.id,
   name: u.name,
   color: u.color,
   initials: u.initials ?? null,
+  workday_hours: u.workdayHours ?? null,
 });
 
 const fromDbTemplate = (r: any, tagIds: string[]): CategoryTemplate => ({
@@ -121,6 +111,7 @@ const fromDbTemplate = (r: any, tagIds: string[]): CategoryTemplate => ({
   lines: r.lines ?? [],
   defaultSelected: r.default_selected,
   tagIds,
+  notes: r.notes ?? undefined, // Amélioration 8
 });
 const toDbTemplate = (t: CategoryTemplate) => ({
   id: t.id,
@@ -128,9 +119,11 @@ const toDbTemplate = (t: CategoryTemplate) => ({
   color: t.color,
   lines: t.lines,
   default_selected: t.defaultSelected ?? false,
+  notes: t.notes ?? null, // Amélioration 8
   updated_at: new Date().toISOString(),
 });
 
+// Amélioration 1 + 8 — orderBySprintId + notes
 const fromDbAssignment = (r: any): AssignedCategory => ({
   id: r.id,
   templateId: r.template_id ?? "",
@@ -139,6 +132,8 @@ const fromDbAssignment = (r: any): AssignedCategory => ({
   color: r.color,
   sprintIds: r.sprint_ids ?? [],
   lines: r.lines ?? [],
+  orderBySprintId: r.order_by_sprint_id ?? undefined,
+  notes: r.notes ?? undefined,
 });
 const toDbAssignment = (
   a: AssignedCategory,
@@ -154,6 +149,8 @@ const toDbAssignment = (
   color: a.color,
   sprint_ids: a.sprintIds,
   lines: a.lines,
+  order_by_sprint_id: a.orderBySprintId ?? null, // Amélioration 1
+  notes: a.notes ?? null, // Amélioration 8
   updated_at: new Date().toISOString(),
 });
 
@@ -179,6 +176,7 @@ const blankBoard = (
   piId,
   categories: [],
   preselectedIds: templates.filter((t) => t.defaultSelected).map((t) => t.id),
+  sortMode: "manual",
 });
 
 // ---- initial load --------------------------------------------------------
@@ -221,6 +219,7 @@ const loadAll = async (): Promise<Omit<Workspace, "activePiId" | "activeProductI
       piId: r.pi_id,
       preselectedIds: r.preselected_ids ?? [],
       categories: assignmentsByBoard.get(k) ?? [],
+      sortMode: r.sort_mode ?? "manual", // Amélioration 7
     };
   }
 
@@ -249,12 +248,13 @@ const loadAll = async (): Promise<Omit<Workspace, "activePiId" | "activeProductI
 export function useWorkspace() {
   const [ws, setWs] = useState<Workspace | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Amélioration 10 — tracking des saves en cours
+  const [savingIds, setSavingIds] = useState<Set<string>>(new Set());
   const wsRef = useRef<Workspace | null>(null);
   useEffect(() => {
     wsRef.current = ws;
   }, [ws]);
 
-  // ----- initial load + realtime subscription -----
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -281,20 +281,11 @@ export function useWorkspace() {
     const sb = supabase();
     const ch = sb.channel("workspace");
     const tables = [
-      "pis",
-      "tags",
-      "products",
-      "designers",
-      "templates",
-      "template_tags",
-      "boards",
-      "assignments",
-      "product_designers",
+      "pis", "tags", "products", "designers", "templates",
+      "template_tags", "boards", "assignments", "product_designers",
     ];
     for (const t of tables) {
-      ch.on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: t },
+      ch.on("postgres_changes", { event: "*", schema: "public", table: t },
         (payload) => applyRealtime(t, payload, setWs),
       );
     }
@@ -306,16 +297,21 @@ export function useWorkspace() {
     };
   }, []);
 
-  // ----- helpers -----
   const patchWs = useCallback((u: (w: Workspace) => Workspace) => {
     setWs((w) => (w ? u(w) : w));
+  }, []);
+
+  // Amélioration 10 — marquer un id comme en cours de sauvegarde
+  const markSaving = useCallback((id: string) => {
+    setSavingIds((s) => new Set(s).add(id));
+  }, []);
+  const markSaved = useCallback((id: string) => {
+    setSavingIds((s) => { const n = new Set(s); n.delete(id); return n; });
   }, []);
 
   const activePi = ws?.pis.find((p) => p.id === ws.activePiId) ?? ws?.pis[0];
   const activeProduct =
     ws?.products.find((p) => p.id === ws.activeProductId) ?? ws?.products[0];
-
-  // ---- actions ----
 
   const ensureBoard = useCallback(
     async (productId: string, piId: string) => {
@@ -323,19 +319,18 @@ export function useWorkspace() {
       if (!w) return;
       const k = boardKey(productId, piId);
       if (w.boards[k]) return;
-      const preselectedIds = w.templates
-        .filter((t) => t.defaultSelected)
-        .map((t) => t.id);
+      const preselectedIds = w.templates.filter((t) => t.defaultSelected).map((t) => t.id);
       patchWs((cur) => ({
         ...cur,
         boards: {
           ...cur.boards,
-          [k]: { productId, piId, preselectedIds, categories: [] },
+          [k]: { productId, piId, preselectedIds, categories: [], sortMode: "manual" },
         },
       }));
-      await supabase()
-        .from("boards")
-        .upsert({ product_id: productId, pi_id: piId, preselected_ids: preselectedIds });
+      await supabase().from("boards").upsert({
+        product_id: productId, pi_id: piId,
+        preselected_ids: preselectedIds, sort_mode: "manual",
+      });
     },
     [patchWs],
   );
@@ -346,11 +341,9 @@ export function useWorkspace() {
       const k = boardKey(productId, piId);
       return (
         w?.boards[k] ?? {
-          productId,
-          piId,
-          categories: [],
-          preselectedIds:
-            w?.templates.filter((t) => t.defaultSelected).map((t) => t.id) ?? [],
+          productId, piId, categories: [],
+          preselectedIds: w?.templates.filter((t) => t.defaultSelected).map((t) => t.id) ?? [],
+          sortMode: "manual",
         }
       );
     },
@@ -366,38 +359,52 @@ export function useWorkspace() {
       const w = wsRef.current;
       if (!w) return;
       const k = boardKey(productId, piId);
-      const existing =
-        w.boards[k] ?? {
-          productId,
-          piId,
-          categories: [],
-          preselectedIds: w.templates.filter((t) => t.defaultSelected).map((t) => t.id),
-        };
+      const existing = w.boards[k] ?? {
+        productId, piId, categories: [],
+        preselectedIds: w.templates.filter((t) => t.defaultSelected).map((t) => t.id),
+        sortMode: "manual" as SortMode,
+      };
       const next = typeof patch === "function" ? patch(existing) : patch;
       const merged: Board = { ...existing, ...next };
 
       patchWs((cur) => ({
         ...cur,
         boards: { ...cur.boards, [k]: merged },
-        pis: cur.pis.map((p) =>
-          p.id === piId ? { ...p, updatedAt: Date.now() } : p,
-        ),
+        pis: cur.pis.map((p) => p.id === piId ? { ...p, updatedAt: Date.now() } : p),
       }));
 
       const sb = supabase();
-      if (next.preselectedIds !== undefined) {
+      if (next.preselectedIds !== undefined || next.sortMode !== undefined) {
         await sb.from("boards").upsert({
-          product_id: productId,
-          pi_id: piId,
+          product_id: productId, pi_id: piId,
           preselected_ids: merged.preselectedIds,
+          sort_mode: merged.sortMode ?? "manual",
           updated_at: new Date().toISOString(),
         });
       }
       if (next.categories !== undefined) {
+        // Amélioration 10 — marquer les catégories modifiées
+        const changedIds = next.categories
+          .filter((c) => {
+            const prev = existing.categories.find((x) => x.id === c.id);
+            return !prev || !assignmentEqual(prev, c);
+          })
+          .map((c) => c.id);
+        changedIds.forEach(markSaving);
         await syncAssignments(productId, piId, existing.categories, merged.categories);
+        changedIds.forEach(markSaved);
       }
     },
-    [patchWs],
+    [patchWs, markSaving, markSaved],
+  );
+
+  // Amélioration 7 — setter du mode de tri
+  const setSortMode = useCallback(
+    async (productId: string, piId: string, mode: SortMode) => {
+      await updateBoard(productId, piId, { sortMode: mode });
+      saveUiPrefs({ ...loadUiPrefs(), sortMode: mode });
+    },
+    [updateBoard],
   );
 
   const updatePi = useCallback(
@@ -407,10 +414,7 @@ export function useWorkspace() {
       const cur = w.pis.find((p) => p.id === id);
       if (!cur) return;
       const merged = { ...cur, ...patch, updatedAt: Date.now() };
-      patchWs((s) => ({
-        ...s,
-        pis: s.pis.map((p) => (p.id === id ? merged : p)),
-      }));
+      patchWs((s) => ({ ...s, pis: s.pis.map((p) => (p.id === id ? merged : p)) }));
       await supabase().from("pis").update(toDbPi(merged)).eq("id", id);
     },
     [patchWs],
@@ -439,11 +443,9 @@ export function useWorkspace() {
       if (products.length) {
         await sb.from("boards").insert(
           products.map((p) => ({
-            product_id: p.id,
-            pi_id: pi.id,
-            preselected_ids: templates
-              .filter((t) => t.defaultSelected)
-              .map((t) => t.id),
+            product_id: p.id, pi_id: pi.id,
+            preselected_ids: templates.filter((t) => t.defaultSelected).map((t) => t.id),
+            sort_mode: "manual",
           })),
         );
       }
@@ -460,22 +462,18 @@ export function useWorkspace() {
       const src = w.pis.find((p) => p.id === id);
       if (!src) return;
       const copy: PiState = {
-        ...src,
-        id: uid(),
-        name: `${src.name} (copy)`,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        ...src, id: uid(), name: `${src.name} (copy)`,
+        createdAt: Date.now(), updatedAt: Date.now(),
       };
       const newBoards: Board[] = w.products.map((prod) => {
         const srcBoard = w.boards[boardKey(prod.id, src.id)];
         return srcBoard
           ? {
-              productId: prod.id,
-              piId: copy.id,
+              productId: prod.id, piId: copy.id,
               preselectedIds: [...srcBoard.preselectedIds],
+              sortMode: srcBoard.sortMode ?? "manual",
               categories: srcBoard.categories.map((c) => ({
-                ...c,
-                id: uid(),
+                ...c, id: uid(),
                 lines: c.lines.map((l) => ({ ...l, id: uid() })),
               })),
             }
@@ -492,9 +490,8 @@ export function useWorkspace() {
       await sb.from("pis").insert(toDbPi(copy));
       await sb.from("boards").insert(
         newBoards.map((b) => ({
-          product_id: b.productId,
-          pi_id: b.piId,
-          preselected_ids: b.preselectedIds,
+          product_id: b.productId, pi_id: b.piId,
+          preselected_ids: b.preselectedIds, sort_mode: b.sortMode ?? "manual",
         })),
       );
       const allAssignments = newBoards.flatMap((b) =>
@@ -517,13 +514,10 @@ export function useWorkspace() {
           if (boards[k].piId === id) delete boards[k];
         }
         return {
-          ...cur,
-          pis: rest,
-          boards,
+          ...cur, pis: rest, boards,
           activePiId: cur.activePiId === id ? rest[0]?.id ?? "" : cur.activePiId,
         };
       });
-      // boards + assignments cascade via FK
       await supabase().from("pis").delete().eq("id", id);
     },
     [patchWs],
@@ -553,8 +547,6 @@ export function useWorkspace() {
     [patchWs],
   );
 
-  // setTemplates accepts (array | (prev) => next). We diff and issue per-row
-  // calls so multiple users can edit independent templates safely.
   const setTemplates = useCallback(
     async (
       updater: CategoryTemplate[] | ((t: CategoryTemplate[]) => CategoryTemplate[]),
@@ -573,12 +565,10 @@ export function useWorkspace() {
       const nextById = new Map(next.map((t) => [t.id, t]));
       const sb = supabase();
 
-      // deletes
       const toDelete = prev.filter((t) => !nextById.has(t.id));
       if (toDelete.length) {
         await sb.from("templates").delete().in("id", toDelete.map((t) => t.id));
       }
-      // upserts (insert or update body + sync template_tags)
       const upserts: CategoryTemplate[] = [];
       for (const t of next) {
         const before = prevById.get(t.id);
@@ -586,23 +576,16 @@ export function useWorkspace() {
       }
       if (upserts.length) {
         await sb.from("templates").upsert(upserts.map(toDbTemplate));
-        // diff tags per template
         for (const t of upserts) {
           const before = new Set(prevById.get(t.id)?.tagIds ?? []);
           const after = new Set(t.tagIds ?? []);
           const removed = [...before].filter((x) => !after.has(x));
           const added = [...after].filter((x) => !before.has(x));
           if (removed.length) {
-            await sb
-              .from("template_tags")
-              .delete()
-              .eq("template_id", t.id)
-              .in("tag_id", removed);
+            await sb.from("template_tags").delete().eq("template_id", t.id).in("tag_id", removed);
           }
           if (added.length) {
-            await sb
-              .from("template_tags")
-              .insert(added.map((tag_id) => ({ template_id: t.id, tag_id })));
+            await sb.from("template_tags").insert(added.map((tag_id) => ({ template_id: t.id, tag_id })));
           }
         }
       }
@@ -610,19 +593,12 @@ export function useWorkspace() {
     [patchWs],
   );
 
-  // ---- Products / Tags ----
   const createProduct = useCallback(
     async (name: string, color: string) => {
       const trimmed = name.trim() || "Product";
       const productId = uid();
       const tag: Tag = { id: uid(), name: trimmed, productId };
-      const product: Product = {
-        id: productId,
-        name: trimmed,
-        color,
-        tagId: tag.id,
-        createdAt: Date.now(),
-      };
+      const product: Product = { id: productId, name: trimmed, color, tagId: tag.id, createdAt: Date.now() };
       const w = wsRef.current;
       const pis = w?.pis ?? [];
       const templates = w?.templates ?? [];
@@ -632,28 +608,19 @@ export function useWorkspace() {
         for (const pi of cur.pis) {
           boards[boardKey(product.id, pi.id)] = blankBoard(product.id, pi.id, cur.templates);
         }
-        return {
-          ...cur,
-          tags: [...cur.tags, tag],
-          products: [...cur.products, product],
-          boards,
-          activeProductId: product.id,
-        };
+        return { ...cur, tags: [...cur.tags, tag], products: [...cur.products, product], boards, activeProductId: product.id };
       });
 
       const sb = supabase();
-      // tag first (FK from products.tag_id), then patch product_id on tag
       await sb.from("tags").insert({ id: tag.id, name: tag.name, product_id: null });
       await sb.from("products").insert(toDbProduct(product));
       await sb.from("tags").update({ product_id: productId }).eq("id", tag.id);
       if (pis.length) {
         await sb.from("boards").insert(
           pis.map((p) => ({
-            product_id: productId,
-            pi_id: p.id,
-            preselected_ids: templates
-              .filter((t) => t.defaultSelected)
-              .map((t) => t.id),
+            product_id: productId, pi_id: p.id,
+            preselected_ids: templates.filter((t) => t.defaultSelected).map((t) => t.id),
+            sort_mode: "manual",
           })),
         );
       }
@@ -673,10 +640,9 @@ export function useWorkspace() {
       patchWs((s) => ({
         ...s,
         products: s.products.map((p) => (p.id === id ? merged : p)),
-        tags:
-          patch.name !== undefined
-            ? s.tags.map((t) => (t.productId === id ? { ...t, name: patch.name! } : t))
-            : s.tags,
+        tags: patch.name !== undefined
+          ? s.tags.map((t) => (t.productId === id ? { ...t, name: patch.name! } : t))
+          : s.tags,
       }));
       const sb = supabase();
       await sb.from("products").update(toDbProduct(merged)).eq("id", id);
@@ -703,20 +669,12 @@ export function useWorkspace() {
           ...t,
           tagIds: (t.tagIds ?? []).filter((tid) => !removedTagIds.includes(tid)),
         }));
-        // drop the product-key from productDesignerIds (DB cascades anyway)
         const { [id]: _drop, ...productDesignerIds } = cur.productDesignerIds;
         return {
-          ...cur,
-          products,
-          tags,
-          boards,
-          templates,
-          productDesignerIds,
-          activeProductId:
-            cur.activeProductId === id ? products[0]?.id ?? "" : cur.activeProductId,
+          ...cur, products, tags, boards, templates, productDesignerIds,
+          activeProductId: cur.activeProductId === id ? products[0]?.id ?? "" : cur.activeProductId,
         };
       });
-      // products cascade -> boards, tags, product_designers (all FKs)
       await supabase().from("products").delete().eq("id", id);
     },
     [patchWs],
@@ -727,9 +685,7 @@ export function useWorkspace() {
       const trimmed = name.trim();
       if (!trimmed) return null;
       const w = wsRef.current;
-      const existing = w?.tags.find(
-        (t) => t.name.toLowerCase() === trimmed.toLowerCase(),
-      );
+      const existing = w?.tags.find((t) => t.name.toLowerCase() === trimmed.toLowerCase());
       if (existing) return existing.id;
       const tag: Tag = { id: uid(), name: trimmed };
       patchWs((cur) => ({ ...cur, tags: [...cur.tags, tag] }));
@@ -745,13 +701,10 @@ export function useWorkspace() {
         ...cur,
         tags: cur.tags.filter((t) => t.id !== id),
         templates: cur.templates.map((t) => ({
-          ...t,
-          tagIds: (t.tagIds ?? []).filter((tid) => tid !== id),
+          ...t, tagIds: (t.tagIds ?? []).filter((tid) => tid !== id),
         })),
         products: cur.products.map((p) => (p.tagId === id ? { ...p, tagId: "" } : p)),
       }));
-      // template_tags cascade via FK. products.tag_id is NOT NULL so we can't
-      // null it from SQL — but the UI prevents deleting a product-tag standalone.
       await supabase().from("tags").delete().eq("id", id);
     },
     [patchWs],
@@ -771,14 +724,15 @@ export function useWorkspace() {
     [patchWs],
   );
 
-  // ---- Designers (Workspace.users) ----
+  // Amélioration 4 — updateUser inclut workdayHours
   const addUser = useCallback(
-    async (name: string, color: string) => {
+    async (name: string, color: string, workdayHours?: number) => {
       const u: User = {
         id: uid(),
         name: name.trim() || "Designer",
         color,
         initials: initialsOf(name),
+        workdayHours,
       };
       patchWs((cur) => ({ ...cur, users: [...cur.users, u], activeUserId: u.id }));
       await supabase().from("designers").insert(toDbDesigner(u));
@@ -795,14 +749,10 @@ export function useWorkspace() {
       const cur = w.users.find((u) => u.id === id);
       if (!cur) return;
       const merged: User = {
-        ...cur,
-        ...patch,
+        ...cur, ...patch,
         initials: patch.name ? initialsOf(patch.name) : cur.initials,
       };
-      patchWs((s) => ({
-        ...s,
-        users: s.users.map((u) => (u.id === id ? merged : u)),
-      }));
+      patchWs((s) => ({ ...s, users: s.users.map((u) => (u.id === id ? merged : u)) }));
       await supabase().from("designers").update(toDbDesigner(merged)).eq("id", id);
     },
     [patchWs],
@@ -816,33 +766,22 @@ export function useWorkspace() {
         const users = cur.users.filter((u) => u.id !== id);
         const boards = { ...cur.boards };
         for (const k of Object.keys(boards)) {
-          boards[k] = {
-            ...boards[k],
-            categories: boards[k].categories.filter((c) => c.userId !== id),
-          };
+          boards[k] = { ...boards[k], categories: boards[k].categories.filter((c) => c.userId !== id) };
         }
-        // local cleanup of productDesignerIds (DB cascades anyway)
         const productDesignerIds: Record<string, string[]> = {};
         for (const [pid, ids] of Object.entries(cur.productDesignerIds)) {
           productDesignerIds[pid] = ids.filter((x) => x !== id);
         }
         return {
-          ...cur,
-          users,
-          boards,
-          productDesignerIds,
+          ...cur, users, boards, productDesignerIds,
           activeUserId: cur.activeUserId === id ? users[0]?.id ?? "" : cur.activeUserId,
         };
       });
-      // assignments.designer_id + product_designers.designer_id both cascade
       await supabase().from("designers").delete().eq("id", id);
     },
     [patchWs],
   );
 
-  // ---- Designers ↔ Product (M2M) ----------------------------------------
-
-  // Link an existing global designer to a product (read-modify-write style).
   const addDesignerToProduct = useCallback(
     async (productId: string, designerId: string) => {
       const w = wsRef.current;
@@ -856,21 +795,19 @@ export function useWorkspace() {
           [productId]: [...(cur.productDesignerIds[productId] ?? []), designerId],
         },
       }));
-      await supabase()
-        .from("product_designers")
-        .insert({ product_id: productId, designer_id: designerId });
+      await supabase().from("product_designers").insert({ product_id: productId, designer_id: designerId });
     },
     [patchWs],
   );
 
-  // Create a brand-new global designer AND link them to the product in one shot.
   const createDesignerForProduct = useCallback(
-    async (productId: string, name: string, color: string) => {
+    async (productId: string, name: string, color: string, workdayHours?: number) => {
       const u: User = {
         id: uid(),
         name: name.trim() || "Designer",
         color,
         initials: initialsOf(name),
+        workdayHours,
       };
       patchWs((cur) => ({
         ...cur,
@@ -883,18 +820,13 @@ export function useWorkspace() {
       }));
       const sb = supabase();
       await sb.from("designers").insert(toDbDesigner(u));
-      await sb
-        .from("product_designers")
-        .insert({ product_id: productId, designer_id: u.id });
+      await sb.from("product_designers").insert({ product_id: productId, designer_id: u.id });
       saveUiPrefs({ ...loadUiPrefs(), activeUserId: u.id });
       return u.id;
     },
     [patchWs],
   );
 
-  // Remove a designer from a product. Cascades to: every assignment that
-  // designer had on this product's boards (across all PIs). The designer
-  // itself stays in the global pool and on other products.
   const removeDesignerFromProduct = useCallback(
     async (productId: string, designerId: string) => {
       const w = wsRef.current;
@@ -905,34 +837,20 @@ export function useWorkspace() {
           if (boards[k].productId !== productId) continue;
           const before = boards[k].categories;
           const after = before.filter((c) => c.userId !== designerId);
-          if (after.length !== before.length) {
-            boards[k] = { ...boards[k], categories: after };
-          }
+          if (after.length !== before.length) boards[k] = { ...boards[k], categories: after };
         }
         return {
           ...cur,
           productDesignerIds: {
             ...cur.productDesignerIds,
-            [productId]: (cur.productDesignerIds[productId] ?? []).filter(
-              (x) => x !== designerId,
-            ),
+            [productId]: (cur.productDesignerIds[productId] ?? []).filter((x) => x !== designerId),
           },
           boards,
         };
       });
       const sb = supabase();
-      // Delete the link first (clean up the team), then drop any assignments
-      // that designer still had on this product's boards.
-      await sb
-        .from("product_designers")
-        .delete()
-        .eq("product_id", productId)
-        .eq("designer_id", designerId);
-      await sb
-        .from("assignments")
-        .delete()
-        .eq("product_id", productId)
-        .eq("designer_id", designerId);
+      await sb.from("product_designers").delete().eq("product_id", productId).eq("designer_id", designerId);
+      await sb.from("assignments").delete().eq("product_id", productId).eq("designer_id", designerId);
     },
     [patchWs],
   );
@@ -944,6 +862,7 @@ export function useWorkspace() {
       activeProduct: activeProduct as Product,
       loading: ws === null,
       error,
+      savingIds, // Amélioration 10
       getBoard,
       ensureBoard,
       updateBoard,
@@ -965,39 +884,19 @@ export function useWorkspace() {
       updateUser,
       removeUser,
       setActiveUser,
+      setSortMode,
       addDesignerToProduct,
       removeDesignerFromProduct,
       createDesignerForProduct,
     }),
     [
-      ws,
-      activePi,
-      activeProduct,
-      error,
-      getBoard,
-      ensureBoard,
-      updateBoard,
-      updatePi,
-      renamePi,
-      createPi,
-      duplicatePi,
-      deletePi,
-      setActivePi,
-      setActiveProduct,
-      setTemplates,
-      createProduct,
-      updateProduct,
-      deleteProduct,
-      createTag,
-      deleteTag,
-      renameTag,
-      addUser,
-      updateUser,
-      removeUser,
-      setActiveUser,
-      addDesignerToProduct,
-      removeDesignerFromProduct,
-      createDesignerForProduct,
+      ws, activePi, activeProduct, error, savingIds,
+      getBoard, ensureBoard, updateBoard, updatePi, renamePi,
+      createPi, duplicatePi, deletePi, setActivePi, setActiveProduct,
+      setTemplates, createProduct, updateProduct, deleteProduct,
+      createTag, deleteTag, renameTag, addUser, updateUser, removeUser,
+      setActiveUser, setSortMode, addDesignerToProduct,
+      removeDesignerFromProduct, createDesignerForProduct,
     ],
   );
 }
@@ -1020,17 +919,14 @@ const applyRealtime = (
         if (eventType === "DELETE") return { ...w, tags: w.tags.filter((t) => t.id !== old.id) };
         return mergeOne(w, "tags", fromDbTag(row));
       case "products":
-        if (eventType === "DELETE")
-          return { ...w, products: w.products.filter((p) => p.id !== old.id) };
+        if (eventType === "DELETE") return { ...w, products: w.products.filter((p) => p.id !== old.id) };
         return mergeOne(w, "products", fromDbProduct(row));
       case "designers":
         if (eventType === "DELETE") return { ...w, users: w.users.filter((u) => u.id !== old.id) };
         return mergeOne(w, "users", fromDbDesigner(row));
       case "templates": {
-        if (eventType === "DELETE")
-          return { ...w, templates: w.templates.filter((t) => t.id !== old.id) };
-        const prevTagIds =
-          w.templates.find((t) => t.id === row.id)?.tagIds ?? [];
+        if (eventType === "DELETE") return { ...w, templates: w.templates.filter((t) => t.id !== old.id) };
+        const prevTagIds = w.templates.find((t) => t.id === row.id)?.tagIds ?? [];
         return mergeOne(w, "templates", fromDbTemplate(row, prevTagIds));
       }
       case "template_tags": {
@@ -1041,8 +937,7 @@ const applyRealtime = (
           templates: w.templates.map((t) => {
             if (t.id !== tid) return t;
             const current = t.tagIds ?? [];
-            if (eventType === "DELETE")
-              return { ...t, tagIds: current.filter((x) => x !== tagId) };
+            if (eventType === "DELETE") return { ...t, tagIds: current.filter((x) => x !== tagId) };
             return current.includes(tagId) ? t : { ...t, tagIds: [...current, tagId] };
           }),
         };
@@ -1060,9 +955,9 @@ const applyRealtime = (
           boards: {
             ...w.boards,
             [k]: {
-              productId: row.product_id,
-              piId: row.pi_id,
+              productId: row.product_id, piId: row.pi_id,
               preselectedIds: row.preselected_ids ?? [],
+              sortMode: row.sort_mode ?? "manual",
               categories: existing?.categories ?? [],
             },
           },
@@ -1073,34 +968,19 @@ const applyRealtime = (
         const did = (eventType === "DELETE" ? old : row).designer_id;
         const cur = w.productDesignerIds[pid] ?? [];
         if (eventType === "DELETE") {
-          return {
-            ...w,
-            productDesignerIds: {
-              ...w.productDesignerIds,
-              [pid]: cur.filter((x) => x !== did),
-            },
-          };
+          return { ...w, productDesignerIds: { ...w.productDesignerIds, [pid]: cur.filter((x) => x !== did) } };
         }
         if (cur.includes(did)) return w;
-        return {
-          ...w,
-          productDesignerIds: { ...w.productDesignerIds, [pid]: [...cur, did] },
-        };
+        return { ...w, productDesignerIds: { ...w.productDesignerIds, [pid]: [...cur, did] } };
       }
       case "assignments": {
         const k = boardKey(row?.product_id ?? old.product_id, row?.pi_id ?? old.pi_id);
         const existing = w.boards[k];
-        if (!existing) return w; // board not yet present
+        if (!existing) return w;
         if (eventType === "DELETE") {
           return {
             ...w,
-            boards: {
-              ...w.boards,
-              [k]: {
-                ...existing,
-                categories: existing.categories.filter((c) => c.id !== old.id),
-              },
-            },
+            boards: { ...w.boards, [k]: { ...existing, categories: existing.categories.filter((c) => c.id !== old.id) } },
           };
         }
         const next = fromDbAssignment(row);
@@ -1134,7 +1014,7 @@ const mergeOne = <K extends "pis" | "products" | "tags" | "users" | "templates">
   return { ...w, [key]: next };
 };
 
-// ---- assignment diff (board.categories) -----------------------------------
+// ---- assignment diff ------------------------------------------------------
 
 const syncAssignments = async (
   productId: string,
@@ -1156,9 +1036,7 @@ const syncAssignments = async (
     if (!before || !assignmentEqual(before, c)) toUpsert.push(c);
   }
   if (toUpsert.length) {
-    await sb
-      .from("assignments")
-      .upsert(toUpsert.map((c) => toDbAssignment(c, productId, piId)));
+    await sb.from("assignments").upsert(toUpsert.map((c) => toDbAssignment(c, productId, piId)));
   }
 };
 
@@ -1168,14 +1046,17 @@ const assignmentEqual = (a: AssignedCategory, b: AssignedCategory) =>
   a.templateId === b.templateId &&
   a.userId === b.userId &&
   arrEq(a.sprintIds, b.sprintIds) &&
-  JSON.stringify(a.lines) === JSON.stringify(b.lines);
+  JSON.stringify(a.lines) === JSON.stringify(b.lines) &&
+  JSON.stringify(a.orderBySprintId ?? {}) === JSON.stringify(b.orderBySprintId ?? {}) &&
+  (a.notes ?? "") === (b.notes ?? "");
 
 const templateEqual = (a: CategoryTemplate, b: CategoryTemplate) =>
   a.name === b.name &&
   a.color === b.color &&
   (a.defaultSelected ?? false) === (b.defaultSelected ?? false) &&
   arrEq(a.tagIds ?? [], b.tagIds ?? []) &&
-  JSON.stringify(a.lines) === JSON.stringify(b.lines);
+  JSON.stringify(a.lines) === JSON.stringify(b.lines) &&
+  (a.notes ?? "") === (b.notes ?? "");
 
 const arrEq = (a: string[], b: string[]) =>
   a.length === b.length && a.every((x, i) => x === b[i]);

@@ -3,6 +3,7 @@ import { useDrag, useDrop } from "react-dnd";
 import { Plus, GripVertical, Trash2, Pencil, Check, X, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { Textarea } from "./ui/textarea";
 import { Label } from "./ui/label";
 import { Card } from "./ui/card";
 import { Badge } from "./ui/badge";
@@ -525,6 +526,21 @@ function TemplateEditor({
           onChange={(ids) => setDraft({ ...draft, tagIds: ids })}
           onCreateTag={onCreateTag}
         />
+      </div>
+
+      {/* v1.2 Amélioration 8 — notes globales du template */}
+      <div className="space-y-1.5">
+        <Label>Notes (optional)</Label>
+        <Textarea
+          value={draft.notes ?? ""}
+          onChange={(e) => setDraft({ ...draft, notes: e.target.value || undefined })}
+          placeholder="Add context, links, or default guidance for this category…"
+          rows={2}
+          className="resize-none text-sm"
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Shown on every assignment created from this template — can be overridden per sprint.
+        </p>
       </div>
 
       <div className="space-y-2">

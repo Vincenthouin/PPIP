@@ -17,9 +17,13 @@ import {
   AssignedCategory,
   Sprint,
   User,
+  hoursToDays,
   initialsOf,
   lineHoursInSprint,
+  resolveWorkdayHours,
 } from "./pi-types";
+
+// v1.2 — chiffres exprimés en jours par designer (chacun peut avoir son propre workdayHours)
 
 export function ProductionSummary({
   sprints,
@@ -27,7 +31,7 @@ export function ProductionSummary({
   users,
   visibleUserIds,
   weeksPerSprint,
-  workdayHours,
+  workdayHours, // fallback si un designer n'a pas de workdayHours perso
 }: {
   sprints: Sprint[];
   categories: AssignedCategory[];
@@ -54,6 +58,7 @@ export function ProductionSummary({
         : `${u.name} (${u.initials ?? u.id.slice(0, 4)})`;
     });
   })();
+
   const sprintDays = useMemo(
     () =>
       sprints.map((s) =>
@@ -65,26 +70,32 @@ export function ProductionSummary({
     [sprints],
   );
 
+  // Chart data en jours de production par designer par sprint
   const chartData = sprints.map((s, i) => {
-    const capacity = sprintDays[i] * workdayHours;
-    const row: any = { name: `S${s.index + 1}`, capacity };
+    const row: any = { name: `S${s.index + 1}` };
     shownUsers.forEach((u) => {
-      const meetings = categories
+      const uwh = resolveWorkdayHours(u, workdayHours);
+      const meetingHours = categories
         .filter((c) => c.userId === u.id && c.sprintIds.includes(s.id))
         .reduce(
           (sum, c) =>
             sum + c.lines.reduce((x, l) => x + lineHoursInSprint(l, weeksPerSprint), 0),
           0,
         );
-      row[u.id] = +Math.max(0, capacity - meetings).toFixed(1);
-      row[`__meet_${u.id}`] = meetings;
+      const capacityHours = sprintDays[i] * uwh;
+      const productionHours = Math.max(0, capacityHours - meetingHours);
+      const productionDays = uwh > 0 ? productionHours / uwh : 0;
+      row[u.id] = +productionDays.toFixed(2);
+      row[`__meet_${u.id}`] = meetingHours;
+      row[`__hours_${u.id}`] = +productionHours.toFixed(1);
     });
     return row;
   });
 
   const perUserTotals = shownUsers.map((u) => {
-    const capacity = sprintDays.reduce((a, b) => a + b, 0) * workdayHours;
-    const meetings = sprints.reduce((sum, s) => {
+    const uwh = resolveWorkdayHours(u, workdayHours);
+    const capacityHours = sprintDays.reduce((a, b) => a + b, 0) * uwh;
+    const meetingHours = sprints.reduce((sum, s) => {
       return (
         sum +
         categories
@@ -97,8 +108,8 @@ export function ProductionSummary({
           )
       );
     }, 0);
-    const production = Math.max(0, capacity - meetings);
-    return { user: u, capacity, meetings, production };
+    const productionHours = Math.max(0, capacityHours - meetingHours);
+    return { user: u, uwh, capacityHours, meetingHours, productionHours };
   });
 
   return (
@@ -107,7 +118,7 @@ export function ProductionSummary({
         <div>
           <h3>Production time by designer</h3>
           <p className="text-xs text-muted-foreground">
-            Available production hours per sprint, after recurring meetings.
+            Available production days per sprint, after recurring meetings.
           </p>
         </div>
       </div>
@@ -118,25 +129,39 @@ export function ProductionSummary({
             <BarChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.4} />
               <XAxis dataKey="name" tickLine={false} axisLine={false} />
-              <YAxis tickLine={false} axisLine={false} unit="h" width={40} />
+              <YAxis tickLine={false} axisLine={false} unit="j" width={40} />
               <Tooltip
                 contentStyle={{
                   borderRadius: 8,
                   border: "1px solid var(--border)",
                   fontSize: 12,
                 }}
+                formatter={(value: any, _name: any, ctx: any) => {
+                  const uid = ctx?.dataKey as string;
+                  const hours = ctx?.payload?.[`__hours_${uid}`];
+                  return [
+                    `${(+value).toFixed(1)}j${hours != null ? ` (${(+hours).toFixed(1)}h)` : ""}`,
+                    ctx?.name,
+                  ];
+                }}
               />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               {shownUsers.map((u, i) => (
-                <Bar key={u.id} dataKey={u.id} name={displayNames[i]} fill={u.color} radius={[4, 4, 0, 0]} />
+                <Bar
+                  key={u.id}
+                  dataKey={u.id}
+                  name={displayNames[i]}
+                  fill={u.color}
+                  radius={[4, 4, 0, 0]}
+                />
               ))}
             </BarChart>
           </ResponsiveContainer>
         </div>
 
         <div className="space-y-2">
-          {perUserTotals.map(({ user, capacity, meetings, production }) => {
-            const pct = capacity ? (production / capacity) * 100 : 0;
+          {perUserTotals.map(({ user, uwh, capacityHours, meetingHours, productionHours }) => {
+            const pct = capacityHours ? (productionHours / capacityHours) * 100 : 0;
             return (
               <div key={user.id} className="rounded-lg border p-3 space-y-1.5">
                 <div className="flex items-center gap-2">
@@ -147,15 +172,15 @@ export function ProductionSummary({
                       {user.initials ?? initialsOf(user.name)}
                     </AvatarFallback>
                   </Avatar>
-                  <span className="text-sm flex-1">{user.name}</span>
-                  <span className="text-sm text-emerald-600">
-                    {production.toFixed(1)}h
+                  <span className="text-sm flex-1 min-w-0 truncate">{user.name}</span>
+                  <span className="text-sm text-emerald-600 shrink-0">
+                    {hoursToDays(productionHours, uwh)}
                   </span>
                 </div>
                 <Progress value={pct} />
                 <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>{meetings.toFixed(1)}h meetings</span>
-                  <span>{capacity}h capacity</span>
+                  <span>{hoursToDays(meetingHours, uwh)} meetings</span>
+                  <span>{hoursToDays(capacityHours, uwh)} capacity</span>
                 </div>
               </div>
             );
